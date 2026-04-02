@@ -1,0 +1,68 @@
+# MTCA W-API Adapter CRM Docker Ignore
+# Security: Prevents sensitive files from being included in Docker builds
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Dependencies
+node_modules
+.npm
+.yarn
+pnpm-store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.*
+.env.local
+.env.development
+.env.production
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist
+build
+*.tgz
+*.tar.gz
+*.zip
+
+# Documentation
+README.md
+CONTRIBUTING.md
+CHANGELOG.md
+LICENSE
+docs
+*.md
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Tests
+coverage
+.nyc_output
+*.test.js
+*.spec.js
+__tests__
+
+# Docker
+Dockerfile*
+docker-compose*.yml
