@@ -1,0 +1,162 @@
+# Deploy W-API Adapter CRM - Docker App
+# Arquitetura: GitHub Actions + Self-Hosted Runner
+name: Deploy W-API Adapter CRM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  APP_NAME: w-api-adapter-crm
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/w-api-adapter-crm
+
+jobs:
+  # ============================================================
+  # BUILD - Build Docker image e push para ghcr.io
+  # ============================================================
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      sha: ${{ github.sha }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,format=long
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Output image info
+        run: |
+          echo "Image built: ${{ steps.meta.outputs.tags }}"
+
+  # ============================================================
+  # DEPLOY - Pull image e restart no VPS via Self-Hosted Runner
+  # ============================================================
+  deploy:
+    needs: build
+    runs-on: self-hosted
+    timeout-minutes: 15
+    environment: production
+
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository }}/w-api-adapter-crm
+      IMAGE_TAG: latest
+      W_API_TOKEN: ${{ secrets.W_API_TOKEN }}
+      W_API_INSTANCE_ID: ${{ secrets.W_API_INSTANCE_ID }}
+      CRM_AGENT_URL: ${{ secrets.CRM_AGENT_URL || 'http://crm-agent:3200' }}
+      CRM_AGENT_SECRET: ${{ secrets.CRM_AGENT_SECRET }}
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy with Docker
+        run: |
+          echo "Deploying $APP_NAME"
+
+          # Use runner's workspace
+          WORK_DIR="$GITHUB_WORKSPACE"
+          mkdir -p "$WORK_DIR"
+
+          # Image to use (lowercase for docker)
+          IMAGE="$REGISTRY/$(echo "$IMAGE_NAME" | tr '[:upper:]' '[:lower:]'):$IMAGE_TAG"
+          echo "Using image: $IMAGE"
+          echo "Working directory: $WORK_DIR"
+
+          # Stop and remove existing container
+          docker stop mtca-w-api-adapter-crm 2>/dev/null || true
+          docker rm mtca-w-api-adapter-crm 2>/dev/null || true
+
+          # Pull new image
+          docker pull "$IMAGE"
+
+          # Create .env file with secrets
+          printf 'W_API_TOKEN=%s\nW_API_INSTANCE_ID=%s\nCRM_AGENT_URL=%s\nCRM_AGENT_SECRET=%s\nPORT=3002\n' \
+            "$W_API_TOKEN" "$W_API_INSTANCE_ID" "$CRM_AGENT_URL" "$CRM_AGENT_SECRET" > "$WORK_DIR/.env"
+
+          # Start container with new image
+          docker run -d \
+            --name mtca-w-api-adapter-crm \
+            --restart unless-stopped \
+            --network mtca_internal \
+            --env-file "$WORK_DIR/.env" \
+            -e PORT=3002 \
+            -p 3002:3002 \
+            "$IMAGE"
+
+      - name: Wait for startup
+        run: sleep 10
+
+      - name: Health Check
+        run: |
+          echo "Checking health..."
+          for i in {1..5}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3002/health 2>/dev/null || echo "000")
+            echo "Attempt $i: HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "W-API Adapter CRM is healthy!"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check not passed"
+          docker logs mtca-w-api-adapter-crm --tail=20
+
+      - name: Show container status
+        if: always()
+        run: docker ps --filter "name=w-api-adapter-crm"
+
+  # ============================================================
+  # SUCCESS
+  # ============================================================
+  success:
+    needs: [build, deploy]
+    if: success()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Success
+        run: |
+          echo "W-API Adapter CRM deployed successfully"
